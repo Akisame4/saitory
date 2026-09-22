@@ -99,6 +99,13 @@ svg#board{width:100%;height:auto;display:block}
 .cell text{paint-order:stroke;stroke:rgba(0,0,0,.6);stroke-width:2.6px;stroke-linejoin:round}
 .cell text.bt{stroke:none}
 .cell polygon.base{filter:drop-shadow(0 3px 3px rgba(0,0,0,.5))}
+/* ---- 収入フェイズの演出 ---- */
+.cell.income-glow polygon.hl{stroke:var(--glowc,var(--gold));stroke-width:6;stroke-dasharray:none;filter:drop-shadow(0 0 10px var(--glowc,var(--gold)));animation:incomeGlow 1s ease-in-out infinite}
+@keyframes incomeGlow{0%,100%{opacity:.5}50%{opacity:1}}
+.fly-dice{position:fixed;width:44px;height:44px;z-index:41;transition:transform .5s cubic-bezier(.25,.6,.35,1),opacity .45s .1s ease-in;pointer-events:none}
+.fly-dice .dice{margin:0}
+.pl.income-pop{animation:incomePop .6s ease}
+@keyframes incomePop{0%{box-shadow:0 0 0 rgba(255,209,102,0)}30%{box-shadow:0 0 18px rgba(255,209,102,.65)}100%{box-shadow:0 0 0 rgba(255,209,102,0)}}
 </style>
 </head>
 <body>
@@ -214,6 +221,7 @@ const rollDie = type=>{const f=DICE[type].faces;return f[Math.floor(Math.random(
 
 function newGame(n, names){
   _id = 1;
+  seenIncomeRound=null;
   const cells = {};
   // 環ごとに完全ランダムに配置（制約なし）
   for(let ring=0;ring<=3;ring++){
@@ -407,6 +415,7 @@ function endTurn(){
   G.turnPos++;
   if(G.turnPos>=order.length){
     incomePhase();
+    noteIncome(false);
     if(!checkEnd()){
       G.round++; G.turnPos=0; G.phase='select'; G.cur=roundOrder()[0];
       log(`── ラウンド${G.round} 開始（親: <b>${P(G.cur).name}</b>）`);
@@ -416,16 +425,17 @@ function endTurn(){
   commit();
 }
 function incomePhase(){
-  const parts=[];
-  G.players.forEach((pl,i)=>{
-    const got=[];
+  const parts=[], order=roundOrder(), events=[];   // 親から順に処理（演出の順序と一致させる）
+  order.forEach(i=>{
+    const pl=P(i), got=[];
     owned(i).forEach(c=>{
       const t = c.def.kind==='income'?c.def.die : c.def.kind==='mult'?'mult' : null;
-      if(t){ pl.stock.push({id:nid(),type:t}); got.push(DICE[t].name); }
+      if(t){ pl.stock.push({id:nid(),type:t}); got.push(DICE[t].name); events.push({seat:i,k:c.k,type:t}); }
     });
     if(got.length) parts.push(`<b>${pl.name}</b>: ${got.join(',')}`);
   });
   log(`【収入】${parts.join(' ／ ')||'なし'}`);
+  G.incomeEvents=events; G.incomeOrder=order; G.incomeRound=G.round;
 }
 function checkEnd(){
   const over=G.players.map((_,i)=>i).filter(i=>stockCount(i)>END_STOCK);
@@ -575,6 +585,13 @@ const DGL = (()=>{
     const g=actx.createGain(); g.gain.value=vol*0.35;
     src.connect(bp); bp.connect(g); g.connect(actx.destination); src.start(t);
   }
+  function tone(freq,dur,vol){   // 収入で届いたダイスの「チャリン」用（既存の音声解錠を流用）
+    if(!sndOn||!actx||actx.state!=='running') return;
+    const t=actx.currentTime, o=actx.createOscillator(), g=actx.createGain();
+    o.type='sine'; o.frequency.setValueAtTime(freq,t); o.frequency.exponentialRampToValueAtTime(freq*1.5,t+dur*0.4);
+    g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime((vol||0.5)*0.22,t+0.008); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+    o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t+dur+0.02);
+  }
 
   // ---- 転がる演出（全画面ステージ）----
   const stageR=new THREE.WebGLRenderer({alpha:true,antialias:true});
@@ -641,7 +658,7 @@ const DGL = (()=>{
       raf=requestAnimationFrame(frame);
     });
   }
-  return {img,roll,get sound(){return sndOn;},setSound(v){ sndOn=!!v; try{localStorage.setItem('saitory_snd',v?'1':'0');}catch(e){} if(v) ac(); }};
+  return {img,roll,tone,get sound(){return sndOn;},setSound(v){ sndOn=!!v; try{localStorage.setItem('saitory_snd',v?'1':'0');}catch(e){} if(v) ac(); }};
   }catch(e){ console.warn('[DGL] disabled:',e); return null; }
 })();
 
@@ -670,7 +687,9 @@ function renderBoard(){
       const tk=targetKind(c.k);
       if(tk){ cls+=' hl-'+tk; if(ids.length && evalTarget(c.k,ids).ok) cls+=' hl-go'; }
     }
-    h+=`<g class="${cls}" data-k="${c.k}" transform="translate(${x.toFixed(1)},${y.toFixed(1)})">`;
+    let glowStyle='';
+    if(UI.incomeCells && UI.incomeCells.has(c.k)){ cls+=' income-glow'; if(UI.incomeSeat!=null) glowStyle=` style="--glowc:${P(UI.incomeSeat).color}"`; }
+    h+=`<g class="${cls}" data-k="${c.k}"${glowStyle} transform="translate(${x.toFixed(1)},${y.toFixed(1)})">`;
     h+=`<polygon class="${c.owner>=0?'base':''}" points="${hexPoints(SZ-2)}" fill="${fill}" stroke="${stroke}"/>`;
     if(c.owner>=0) h+=`<polygon points="${hexPoints(SZ-2)}" fill="${P(c.owner).color}" opacity=".36" stroke="none"/>`;
     h+=`<polygon points="${hexPoints(SZ-6)}" fill="none" stroke="rgba(255,255,255,.09)" stroke-width="1.5"/>`;
@@ -704,7 +723,7 @@ function renderPlayers(){
     const on = ONLINE&&G.pids&&ROOM&&ROOM.players&&ROOM.players[G.pids[i]];
     const dotTxt = on?(on.online?' <span style="color:var(--ok);font-size:11px">●オンライン</span>':' <span class="warn" style="font-size:11px">●切断中</span>'):'';
     const you = ONLINE&&i===mySeat()?' <span style="font-size:11px;color:var(--gold)">（あなた）</span>':'';
-    return `<div class="pl ${isCur?'cur':''}"><div class="dot" style="background:${pl.color}"></div>
+    return `<div class="pl ${isCur?'cur':''}" data-pl="${i}"><div class="dot" style="background:${pl.color}"></div>
       <div class="nm">${esc(pl.name)}${you}${dotTxt}${parent?' <span style="font-size:11px;color:var(--gold)">親</span>':''}${isCur?' ◀':''}</div>
       <div class="st">ストック <b class="${sc>END_STOCK-5?'warn':''}">${sc}</b>/${END_STOCK}${onceN?`（＋使い捨て${onceN}）`:''}　振り枠 <b>${slotsFor(i)}</b>　支配 <b>${oc.length}</b>マス　盤上ダイス <b>${bd}</b>　マス点 <b>${pts}</b></div>
       <div class="st">${Object.entries(pl.stock.reduce((m,d)=>(m[d.type]=(m[d.type]||0)+1,m),{})).map(([t,c])=>`${DICE[t].name}×${c}`).join(' ')||'ストック空'}</div>
@@ -715,6 +734,11 @@ function renderPlayers(){
 function renderAction(){
   const el=$('#action'); let h='';
   const me=P(G.cur);
+  if(UI.incomePlaying){
+    const nm = UI.incomeSeat!=null ? `<b style="color:${P(UI.incomeSeat).color}">${esc(P(UI.incomeSeat).name)}</b>の収入` : '';
+    h+=`<div>💰 収入フェイズ… ${nm}</div><div class="legend">支配している収入マスの分だけ、ダイスがストックに届きます</div>`;
+    el.innerHTML=h; return;
+  }
   if(ONLINE && G.phase!=='over' && !canAct()){
     h+=`<div>⏳ <b style="color:${me.color}">${esc(me.name)}</b> の手番を待っています…</div>`;
     if(G.phase==='act') h+=`<div class="sec">出目</div><div>${UI.rolling?'<div class="rolling">🎲 振っています…</div>':G.hand.map(x=>diceChip(x.type,x.val,{roll:UI.rolledIds.has(x.id)})).join('')}</div>`;
@@ -777,10 +801,59 @@ function renderTop(){
 function renderLog(){ const l=$('#log'); l.innerHTML=G.log.map(s=>`<div>${s}</div>`).join(''); l.scrollTop=l.scrollHeight; }
 function render(){
   renderTop(); renderBoard(); renderPlayers(); renderAction(); renderInfo(); renderLog();
-  if(G.phase==='over' && G.final && !UI.resultShown){ UI.resultShown=true; showResult(); }
+  if(G.phase==='over' && G.final && !UI.resultShown && !UI.incomePlaying){ UI.resultShown=true; showResult(); }
 }
 
 
+// ---------- 収入フェイズの演出（親から順に、マスが光ってダイスが手元に届く） ----------
+const sleep = ms=>new Promise(r=>setTimeout(r,ms));
+let seenIncomeRound=null;
+function noteIncome(silent){
+  if(!G || !G.incomeRound || G.incomeRound===seenIncomeRound) return;
+  seenIncomeRound=G.incomeRound;
+  if(silent || window.__noAnim || document.hidden) return;
+  playIncomeAnim(G.incomeEvents||[], G.incomeOrder||[]);
+}
+function chime(vol){ if(DGL) DGL.tone(880+Math.random()*380,0.22,vol); }
+function incomeLayer(){
+  let l=document.getElementById('incomeLayer');
+  if(!l){ l=document.createElement('div'); l.id='incomeLayer'; l.style.cssText='position:fixed;inset:0;pointer-events:none;z-index:40;'; document.body.appendChild(l); }
+  return l;
+}
+async function flyDiceForPlayer(seat, evs){
+  const S=window.__incomeSlow||1;
+  UI.incomeSeat=seat; UI.incomeCells=new Set(evs.map(e=>e.k));
+  render();
+  await sleep(180*S);   // 光ってから少し間を置いて飛ばす
+  const dstEl=document.querySelector(`.pl[data-pl="${seat}"]`);
+  const dst = dstEl ? (()=>{const r=dstEl.getBoundingClientRect(); return {x:r.left+22,y:r.top+r.height/2};})() : null;
+  const layer=incomeLayer();
+  await Promise.all(evs.map((e,idx)=>new Promise(res=>{
+    const g=document.querySelector(`#board [data-k="${e.k}"]`);
+    const src = g ? (()=>{const r=g.getBoundingClientRect(); return {x:r.left+r.width/2,y:r.top+r.height/2};})() : null;
+    if(!src||!dst){ res(); return; }
+    const el=document.createElement('div');
+    el.className='fly-dice'; el.innerHTML=diceChip(e.type,null);
+    el.style.left=(src.x-22)+'px'; el.style.top=(src.y-22)+'px';
+    el.style.transition=`transform ${.5*S}s cubic-bezier(.25,.6,.35,1),opacity ${.45*S}s ${.1*S}s ease-in`;
+    layer.appendChild(el);
+    const delay=idx*100*S;
+    setTimeout(()=>{ el.style.transform=`translate(${dst.x-src.x}px,${dst.y-src.y}px) scale(.3)`; el.style.opacity='0'; },delay+20);
+    setTimeout(()=>{ chime(0.4+Math.random()*0.3); el.remove(); res(); },delay+560*S);
+  })));
+  if(dstEl){ dstEl.classList.add('income-pop'); setTimeout(()=>dstEl.classList.remove('income-pop'),600); }
+}
+async function playIncomeAnim(events, order){
+  if(!events.length || !order.length) return;
+  const bySeat={}; events.forEach(e=>{ (bySeat[e.seat]=bySeat[e.seat]||[]).push(e); });
+  UI.incomePlaying=true;
+  for(const seat of order){
+    const evs=bySeat[seat];
+    if(evs && evs.length) await flyDiceForPlayer(seat, evs.slice(0,10));
+  }
+  UI.incomePlaying=false; UI.incomeSeat=null; UI.incomeCells=null;
+  render();
+}
 // ---------- 振る演出 ----------
 function startRollAnim(){
   if(!DGL||window.__noAnim||document.hidden) return;
@@ -794,9 +867,10 @@ function startRollAnim(){
 function showResult(){
   if(!DGL||window.__noAnim||document.hidden){ buildResult(); return; }
   // 全員のストックを一斉に振る演出（多すぎる場合は48個まで）
+  // ※ UI.rolling とは別のフラグ（手番中の振る演出がまだ残っていても消し合わないように）
   const all=G.final.flatMap(f=>f.rolls).slice(0,48).map(r=>({type:r.type,val:r.val}));
-  UI.rolling=true; $('#ov').style.display='none';
-  const fin=()=>{ if(UI.rolling){ UI.rolling=false; buildResult(); } };
+  UI.resultRolling=true; $('#ov').style.display='none';
+  const fin=()=>{ if(UI.resultRolling){ UI.resultRolling=false; buildResult(); } };
   DGL.roll(all).then(fin); setTimeout(fin,5000);
 }
 function buildResult(){
@@ -858,7 +932,7 @@ const RULES=`<h2>ルール要約</h2><div style="font-size:13px;line-height:1.75
 document.addEventListener('click',e=>{
   const t=e.target;
   const mutating = (t.closest && (t.closest('.cell')||t.closest('[data-pick],[data-unpick],[data-hand]'))) || ['btnRoll','btnPass','btnEnd','btnClear','btnPlus','btnMinus'].includes(t.id);
-  if(UI.rolling && mutating) return;
+  if((UI.rolling||UI.incomePlaying) && mutating) return;
   if(ONLINE && G && mutating && !canAct()) return;
   const cell=t.closest&&t.closest('.cell');
   if(cell && G){
@@ -981,9 +1055,11 @@ function onRoom(room){
     if(!G || G.roomCode!==inc.roomCode || (inc.ver||0)>(G.ver||0)){
       const old=G;
       G=inc; _id=G._id||_id;
+      const freshJoin = !old || old.roomCode!==G.roomCode;
       UI.handSel=new Set(); UI.rolledIds=new Set();
       if(G.phase==='act' && (!old||old.roomCode!==G.roomCode||old.phase!=='act'||old.cur!==G.cur)){ G.hand.forEach(h=>UI.rolledIds.add(h.id)); startRollAnim(); }
       if(!old||old.roomCode!==G.roomCode||old.phase!=='over') UI.resultShown=false;
+      noteIncome(freshJoin);
       UI.msg=''; UI.msgKind='';
     }
     if(UI.lobby){ UI.lobby=false; $('#ov').style.display='none'; }
