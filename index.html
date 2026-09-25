@@ -864,21 +864,57 @@ function startRollAnim(){
   DGL.roll(list).then(fin); setTimeout(fin,4500);
 }
 // ---------- 結果画面（最終ロール演出） ----------
-function showResult(){
+// 振る順番：振る前の点数（マス＋盤上）が低い人から。同点は席順
+function finalOrder(){
+  return G.final.slice().sort((a,b)=>(a.cellPts+a.boardDice)-(b.cellPts+b.boardDice) || a.i-b.i);
+}
+function finalCaption(){
+  let c=document.getElementById('finalCap');
+  if(!c){
+    c=document.createElement('div'); c.id='finalCap';
+    c.style.cssText='position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:35;background:rgba(10,13,22,.88);border:2px solid #4a5670;border-radius:14px;padding:10px 18px;text-align:center;min-width:260px;max-width:calc(100vw - 32px);box-sizing:border-box;transition:opacity .3s';
+    document.body.appendChild(c);
+  }
+  return c;
+}
+async function showResult(){
   if(!DGL||window.__noAnim||document.hidden){ buildResult(); return; }
-  // 全員のストックを一斉に振る演出（多すぎる場合は48個まで）
+  // 最下位（振る前の点数）から1人ずつストックを振る演出（1人あたり48個まで表示）
   // ※ UI.rolling とは別のフラグ（手番中の振る演出がまだ残っていても消し合わないように）
-  const all=G.final.flatMap(f=>f.rolls).slice(0,48).map(r=>({type:r.type,val:r.val}));
-  UI.resultRolling=true; $('#ov').style.display='none';
-  const fin=()=>{ if(UI.resultRolling){ UI.resultRolling=false; buildResult(); } };
-  DGL.roll(all).then(fin); setTimeout(fin,5000);
+  UI.resultRolling=true; UI.resultSkip=false; $('#ov').style.display='none';
+  const cap=finalCaption(); cap.style.opacity=1;
+  const skipBtn=document.createElement('button'); skipBtn.textContent='スキップ ▶▶';
+  skipBtn.style.cssText='position:fixed;right:16px;bottom:16px;z-index:36';
+  skipBtn.onclick=()=>{ UI.resultSkip=true; const st=document.getElementById('stage'); if(st) st.style.opacity=0; };
+  document.body.appendChild(skipBtn);
+  const wait=async ms=>{ const end=performance.now()+ms*(window.__rollSlow||1); while(!UI.resultSkip&&performance.now()<end) await sleep(50); };
+  const order=finalOrder();
+  for(let k=0;k<order.length&&!UI.resultSkip;k++){
+    const f=order[k], pl=P(f.i), base=f.cellPts+f.boardDice;
+    cap.style.borderColor=pl.color;
+    cap.innerHTML=`<div class="legend">最終ロール ${k+1}／${order.length}</div>
+      <div style="font-size:22px;font-weight:bold;color:${pl.color}">${esc(pl.name)}</div>
+      <div>マス ${f.cellPts} ＋ 盤上 ${f.boardDice} ＝ <b>${base}</b>点 ／ ストック${f.rolls.length}個を振る…</div>`;
+    await wait(1100);
+    if(UI.resultSkip) break;
+    if(f.rolls.length){
+      const list=f.rolls.slice(0,48).map(r=>({type:r.type,val:r.val}));
+      await Promise.race([DGL.roll(list), sleep(4500*(window.__rollSlow||1)), (async()=>{ while(!UI.resultSkip) await sleep(50); })()]);
+    }
+    cap.innerHTML=`<div class="legend">最終ロール ${k+1}／${order.length}</div>
+      <div style="font-size:22px;font-weight:bold;color:${pl.color}">${esc(pl.name)}</div>
+      <div>${base}点 ＋ ロール <b>${f.rollSum}</b> ＝ <span style="font-size:24px;font-weight:bold">${f.total}</span>点</div>`;
+    await wait(1800);
+  }
+  skipBtn.remove(); cap.style.opacity=0; setTimeout(()=>{ if(cap.style.opacity==='0') cap.innerHTML=''; },300);
+  if(UI.resultRolling){ UI.resultRolling=false; buildResult(); }
 }
 function buildResult(){
   const ov=$('#ov'), box=$('#ovBox'); ov.style.display='flex'; UI.lobby=false;
   const maxT=Math.max(...G.final.map(f=>f.total));
-  let h=`<h2>最終ロール ＆ 結果</h2><div class="legend" style="margin-bottom:8px">得点 ＝ ストック全部を振った出目合計 ＋ 支配マスの点数 ＋ 盤上ダイスの個数</div>`;
+  let h=`<h2>最終ロール ＆ 結果</h2><div class="legend" style="margin-bottom:8px">得点 ＝ ストック全部を振った出目合計 ＋ 支配マスの点数 ＋ 盤上ダイスの個数（振った順）</div>`;
   let t=0;
-  G.final.forEach(f=>{
+  finalOrder().forEach(f=>{
     const pl=P(f.i);
     const chips=f.rolls.map((r,j)=>{const dl=(t+j*60);return diceChip(r.type,r.val,{pop:1,delay:dl});}).join('');
     const end=t+f.rolls.length*60+300; t=end;
